@@ -54,6 +54,18 @@ The first run downloads the OWL-ViT and PaddleOCR models, so it takes a little l
 | No reading found | 422 | `UNREADABLE_IMAGE` |
 | Anything else | 500 | `INTERNAL_ERROR` |
 
+## Tests
+
+```
+npm run test
+```
+
+There are two test files:
+
+- `tests/logic.test.ts` tests the pure application logic. It runs in about a second.
+- `tests/odometer.test.ts` starts the server and POSTs each of the sample images, and tests a few failure cases. It loads the OWL-ViT and PaddleOCR models, so the first run may download them and takes a while.
+
+
 ## How it works
 
 1. Locate the odometer with OWL-ViT (zero-shot object detection) and crop to it. If nothing is found, the whole image is used.
