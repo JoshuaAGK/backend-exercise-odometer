@@ -2,7 +2,7 @@ export const serverPort = 3000;
 export const maxUploadBytes = 50 * 1024 * 1024;
 export const base64DataUrlPrefix = /^data:image\/\w+;base64,/;
 
-export const odometerDetectorModel = 'OWL-ViT';
+export const odometerDetectorModel = 'Xenova/owlvit-base-patch32';
 export const detectionThreshold = 0.05;
 export const DEFAULT_ODOMETER_LABELS = [
     'digital odometer screen with numbers',
