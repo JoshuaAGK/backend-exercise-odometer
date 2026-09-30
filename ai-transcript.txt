@@ -1,0 +1,469 @@
+Me:
+I've attached a copy of a README. This is a technical task I have been sent to complete for a job interview.
+Could you help me translate it into a set of requirements? I have an idea myself but don't want to miss anything.
+
+ChatGPT:
+Here's how I'd split the brief.
+Hard requirements, the things a reviewer will check off:
+- One endpoint: POST /odometer/reading.
+- Input: a JPEG or PNG, sent either as multipart/form-data or as base64 in a JSON body. Both have to work; it says "or" but lists them as two supported formats.
+- Success output: { reading, unit, confidence }, where their example uses a number, "miles" and the word "high".
+- A specific failure shape for an unreadable image: { "error": "UNREADABLE_IMAGE", "message": "Could not extract a mileage reading from ..." }
+- Graceful handling of four named cases: missing image, unsupported file type, unreadable image and "other invalid inputs".
+- TypeScript with strict mode, tests, and a README with setup instructions.
+
+Things the brief leaves open, which you should decide deliberately rather than by accident:
+- What does "confidence" mean? Their example is a word, so it's a bucket, but a bucket of what?
+- Do decimals count? Many odometers show tenths of a mile.
+- What HTTP status goes with each failure? They only give the body for the unreadable case.
+- What counts as "unsupported file type"? The Content-Type header, the filename extension, or the actual bytes?
+
+I'd also note what they say they're evaluating: how you think through problems, how you structure code and how you communicate decisions.
+They explicitly say it doesn't need to be production-ready. That argues for a small, readable service with its decisions written down, over breadth.
+
+Me:
+Here's what I think. What are your thoughts?
+
+Confidence is probably gonna be the the OCR engine's confidence for what it's read, translated into high/medium/low. I'll look up if there are any common examples.
+I'll keep decimals if the display shows them. One of the images they provided show 62690.5 mi, I reckon they're probabyl expecting me to keep that in.
+HTTP 400 for anything wrong with the request, 422 if the image is fine but unreadable, 413 if the image is huge, and 500 for anything unexpected.
+If we're checking supported file types we should probably be doing that based on the actual file contents instead of just the file extension.
+
+ChatGPT:
+Those all hold up. Some notes on each.
+
+Confidence: "the OCR engine's confidence for what it's read" is the right definition, but consider that most OCR engines report an overall confidence for the whole image as well as per-word confidences.
+They're very different numbers, and it's easy to grab the overall one by accident. We should come back to this once we see what the OCR output actually looks like.
+
+Decimals: agreed. It's also cheap: parsing "62690.5" with Number() just works. The risk is the opposite case, where OCR reads a stray dot, which we should handle when designing the parser.
+
+Status codes: 422 is the right call for "valid image, but we couldn't read it", because the request itself was well-formed.
+It keeps "you sent something wrong" (4xx that the client can fix) separate from "we tried and failed" (422, where retrying with a clearer photo helps).
+
+Checking bytes rather than trusting the header is the right instinct. A client can label a GIF as image/jpeg, and a filename says nothing.
+Reading the image's own header with an image library will tell you the real format, and it doubles as validation that the file decodes at all.
+
+One more requirement to keep in mind: "If your chosen approach requires credentials ... provide a mock/stub mode".
+If you use a cloud OCR API, you'll owe them a stub mode, and the reviewers will then be evaluating the stub, not your OCR.
+
+Me:
+I think I'll keep it all running locally. Remember that for when I need to do OCR.
+
+ChatGPT:
+Agreed. Running locally means `npm install && npm start` is the entire setup, which is the best experience a reviewer can have.
+The cost is model download size and CPU inference time, and both are fine for a demo.
+I'd write that tradeoff in the README so it reads as a decision, not an accident.
+
+Me:
+What are some realistic OCR options for nodejs? what are their pros and cons? Don't pick one for me.
+
+ChatGPT:
+Here are the four families worth considering.
+
+1. Cloud OCR APIs (Google Cloud Vision, AWS Textract, Azure AI Vision)
+    + The most accurate option on real-world photos, with no tuning.
+    + Google Vision fits Just's GCP stack, which is a point in its favour in an interview.
+    - Needs credentials, so you'd have to build the stub mode the brief asks for.
+    - Sends customer photos to a third party. That's fine in production with a contract, but it's a real consideration for insurance data.
+
+2. Tesseract.js
+    + Pure JavaScript/WASM, npm install and go, very well known.
+    - It's built for printed document text: flat, high contrast, standard fonts.
+    - Seven-segment LCD digits are a known weak spot, because the segments don't touch, so the character shapes look broken to it. Glare, perspective and curved dashboards make it worse.
+
+3. PaddleOCR (in Node via the ppu-paddle-ocr package, which runs ONNX models)
+    + A modern two-stage model: one network finds text regions, another reads them. It's designed for "scene text", meaning text in photographs.
+    + Runs locally, so no credentials.
+    + Returns structured output: lines of text boxes, each with its own confidence.
+    - Downloads model files on first run, and inference is slower than Tesseract.
+
+4. A vision-language model (for example a local LLaVA-style model)
+    + You can literally ask it "what's the mileage?".
+    - Heavy, slow on CPU, hard to get a real confidence score from, and it can hallucinate digits, which is a bad failure mode when the number decides someone's insurance bill.
+
+The deciding questions are: does it need to run without credentials, and how much do you trust your pre-processing to make up for a weaker OCR engine?
+
+Me:
+I think a cloud option is the obvious production choice. but I dont want to deal with the mocking and the credentials for a take home test. I told you it needs to run locally
+
+ChatGPT:
+That narrows it to Tesseract.js versus PaddleOCR. A VLM is out on reliability grounds, since a confidently made-up digit is worse than an honest "unreadable".
+
+One suggestion for the interview: mention that in production you'd probably evaluate Cloud Vision behind the same interface, since it fits their stack.
+It shows you considered it and chose against it for this context, rather than not knowing about it.
+
+Me:
+Ok I googled it and it seems Tesseract is the popular one for sure. But the test images are all odometers with seven segment displays, so I'll try PaddleOCR.
+If I had more time I'd like to give Tesseract a go tbh but I think maybe I'll try PaddleOCR first and fail fast if needed.
+
+ChatGPT:
+That's a sound call, and your reasoning is the right way to present it.
+
+Here's roughly what PaddleOCR gives you back, so you can plan around it:
+
+    {
+        text: "...",
+        lines: [
+        [ { text: "The quick brown fox",        confidence: 0.88, box: { x, y, width, height } } ],
+        [ { text: "Jumps over the lazy dog",    confidence: 0.99, box: { ... } } ],
+        ],
+        confidence: 0.82   // average across everything it found
+    }
+
+Two things to note. First, each line is an array of boxes, and one line can hold several separate pieces of text.
+Second, there's the per-box confidence and the top-level average.
+That's the distinction I flagged earlier: for "confidence of the reading" you want the box the reading came from, not the average.
+
+The configuration is small. The default character dictionary handles digits fine, and the "per-box" recognition strategy keeps boxes separate:
+    const service = new PaddleOcrService({
+        model: V6_MEDIUM_MODEL,
+        recognition: {
+            strategy: "per-box",
+            charactersDictionary: [],
+        },
+    });
+    await service.initialize();
+
+Load it once at startup, not per request, because initialisation is the slow part.
+
+Me:
+Running OCR on the whole photo picks up everything on the dash: the numbers around the speedometer, the clock, fuel range, RPM, etc.
+My plan was to just grab the biggest number because that's going to be the mileage, but I think all the other numbers are confusing it.
+Are there any known solutions to this?
+
+ChatGPT:
+Right. The more irrelevant text OCR sees, the more your parser has to guess. There are three ways to narrow it down.
+
+A hand-written heuristic, e.g. "find the brightest rectangle" or "find the region with the most edges".
+Cheap and fast, but fragile: LCD backlights vary in colour, and glare is often the brightest thing in the photo.
+
+A trained odometer detector.
+That would be the best option, but there isn't an off-the-shelf one, and you'd need labelled data you don't have.
+
+Zero-shot object detection.
+Zero-shot models take the image plus text descriptions ("a digital odometer display") and return boxes with scores for each description, with no training.
+
+Option (c) is the only one that works without data and isn't a pile of hand-tuned pixel rules.
+The catch is that zero-shot models are sensitive to wording, and their scores on unusual objects like odometers can be low.
+
+Me:
+okay I don't know what zero shot means but I'll go look that up. Sounds promising though. Come up with a list of descriptions I can have it search for?
+
+ChatGPT:
+Zero-shot image recognition is a computer vision capability that allows an AI model to correctly identify and classify objects in images it has never seen before.
+It leverages auxiliary semantic information, such as natural language descriptions or visual attributes.
+
+Here is a list of text descriptions you could provide to a zero-shot object detection model:
+- "digital odometer screen with numbers"
+- "odometer display with numbers"
+- "number display"
+- "speedometer cluster display"
+- "center numeric display screen"
+
+Several phrasings is the right way to handle the wording sensitivity. You get a detection per label, and picking the best one across all of them is simple:
+
+    const detections: detection[] = await detector(rawImage, DEFAULT_ODOMETER_LABELS, { threshold: detectionThreshold });
+
+    let best: detection | null = null;
+    for (const detection of detections) {
+        if (!best || detection.score > best.score) {
+            best = detection;
+        }
+    }
+    return best;
+
+Returning null when nothing clears the threshold lets the caller decide what to do.
+I'd fall back to the whole image rather than failing: a missed detection shouldn't become an unreadable image.
+
+Me:
+I noticed in google images that nearly always where the odometer sits inside a speedometer is in the centre about 2/3 of the way down.
+So if the detected model label was for speedometer then we can assume that's where the odometer is, right?
+So I can crop into just that bit
+
+ChatGPT:
+That's a reasonable use of domain knowledge. Here's how that reads as code, with one fix I'd add:
+detection boxes can extend past the edge of the image, and sharp throws if you ask it to extract outside the image, so clamp the padded box to the image bounds.
+
+    if (label.includes(cropSettings.speedometerLabelKeyword) || boxWidth > cropSettings.speedometerMinBoxWidth) {
+        const region = cropSettings.speedometerRegion;   // { left: 0.15, top: 0.52, width: 0.7, height: 0.38 }
+        return {
+            left: Math.floor(box.xmin + boxWidth * region.left),
+            top: Math.floor(box.ymin + boxHeight * region.top),
+            width: Math.floor(boxWidth * region.width),
+            height: Math.floor(boxHeight * region.height),
+        };
+    }
+
+    const padX = boxWidth * cropSettings.paddingRatio;
+    const padY = boxHeight * cropSettings.paddingRatio;
+    const left = Math.max(0, Math.floor(box.xmin - padX));
+    const top = Math.max(0, Math.floor(box.ymin - padY));
+    const right = Math.min(this.metadata.width, Math.ceil(box.xmax + padX));
+    const bottom = Math.min(this.metadata.height, Math.ceil(box.ymax + padY));
+
+
+Me:
+Some of these photos are rubbish and blurry or dusty. I found some steps on stack overflow that talk about processing images for OCR:
+greyscale, then boost contrast, then blur, then invert it if the background is dark, so the OCR sees black text on light background.
+Do you think that'll apply with this model?
+
+ChatGPT:
+Each step has a clear purpose, which is good. A quick check on each:
+    - Grayscale: OCR doesn't need colour, and it makes the green and orange LCDs look alike. Good.
+    - Equalisation: stretches the brightness range so faint segments stand out. It also amplifies
+      noise, which is why blurring afterwards makes sense.
+    - Blur: smooths noise and the gaps between LCD segments. The risk is a fixed blur size. A 5x5 blur
+      on a 4000px photo does almost nothing, while a large blur on an already soft photo smears the
+      digits together.
+    - Invert on dark backgrounds: most OCR models are trained mostly on dark-on-light text, so this
+      makes sense for a backlit LCD.
+
+    So the fixed blur is the one step I'd rework.
+
+Me:
+How's this?
+
+ChatGPT:
+One thing to watch in the overall ordering: the "is the background dark?" check should run after equalisation (so it sees the stretched brightness) but before the blur and invert, otherwise you're measuring your own processing.
+The workflow reads clearly as:
+        await image.grayscale();
+        await image.equalize();
+        const darkBackground = await image.isDarkBackground();
+        await image.blur();
+        if (darkBackground) {
+            await image.invert();
+        }
+
+One detail to get right is phone photos. They often store orientation as EXIF metadata instead of rotating the pixels, so a photo can look upright in a viewer but reach your code sideways.
+Calling sharp's .rotate() with no arguments applies the EXIF orientation. Do that once when you first load the image, so everything downstream (detection, cropping, OCR) sees the same upright image.
+
+
+Me:
+Give me an express server boilerplate that takes a POST for /odometer/reading
+
+ChatGPT:
+I've written you a minimal starting point in index.ts. The async factory means the models load before the server starts listening, so the first request doesn't pay the model-loading cost.
+
+A few choices to be aware of:
+    - The default body-size limit for express.json is 100kb, which is far too small for a base64 photo, so the limit has to be raised explicitly.
+    - Top-level await in index.ts needs ES modules, so "type": "module" goes in package.json.
+    - Recent Node versions run .ts files directly by stripping the types, so you don't need ts-node or a build step: "start": "node src/index.ts".
+      The catch is that imports must use the .ts extension, and TypeScript needs allowImportingTsExtensions to accept that.
+
+I've left multipart out for now. It needs a parser like multer, and it's worth deciding how the two upload formats should be handled together before adding it.
+
+
+Me:
+Here's my application structure. I want you to challenge this:
+Routing is in server.ts, the image gets wrapped in PipelineImage, and I have a few small classes around the OCR and the cropping and image stuff.
+
+ChatGPT:
+Here's what I'd push on, roughly most to least important.
+
+1. server.ts knows too much. Right now the route handler decodes the image, runs detection, crops, runs five pre-processing steps, runs OCR, parses the result and converts units.
+That's the whole business process inside an HTTP handler. If you ever wanted to run this from a queue consumer (Just's job spec mentions PubSub), you'd have to untangle it.
+Moving the workflow into its own module lets the route just deal with HTTP:
+
+    const odometerReading = await readOdometer(getImage(request));
+
+2. The "Utils" class isn't utilities. extractOdometerReading and the confidence mapping are the core odometer logic, arguably the most important code in the repo.
+Putting them in a class called Utils hides that. They belong with the workflow.
+
+3. The four image operations are copy-pasted. grayscale(), equalize(), invert() and blur() each repeat "make sure OpenCV is set up, run the operation, convert the result back to a PNG buffer".
+That can be one helper, with each operation passing in only what differs:
+
+    async grayscale(): Promise<void> {
+        await this.applyOcv((processor) => processor.grayscale());
+    }
+
+4. You could go much further. You could make it a hexagonal architecture, like the job spec describes:
+An OdometerReader port (interface), adapters for each model, dependency injection so the HTTP layer can be tested with a fake reader, separate modules for error mapping and upload parsing, and a domain error type.
+
+Me:
+Yeah I wasn't keeping the in those files forever mate, I've only just got the thing put together. But okay I'll do that now.
+Not so sure about that last one though. I mean yeah it's a good shout for production but that feels a bit much for the scope of this task. idk, I'll see if I have time.
+
+ChatGPT:
+That's a fair pushback. If an interviewer asks "how would you make this hexagonal?", the answer is short: turn loadOdometerDetector and loadOcr into interfaces,
+and pass the reader into the server instead of creating it there. Being able to say that is worth more than having built it.
+
+Me:
+How would you structure this? I need to upload in both formats and handle error cases. Should be the same "image" field name for both and the same responses for both.
+
+ChatGPT:
+I'd split it into three questions: getting the bytes, validating them, and mapping failures to responses.
+
+1. Getting the bytes. multer handles multipart; with memoryStorage the file arrives as a Buffer and never touches disk.
+Conveniently, multer skips non-multipart requests, so it can sit in front of the route alongside express.json. Then one small function handles both formats:
+
+    const getImage = (request: Request): Buffer => {
+        if (request.file) {
+            return request.file.buffer;
+        }
+
+        const image = request.body?.image;
+        if (typeof image === 'string' && image.length > 0) {
+            return Buffer.from(image.replace(base64DataUrlPrefix, ""), "base64");
+        }
+
+        throw new InvalidImageError('MISSING_IMAGE', errorMessages.missingImage);
+    }
+
+Stripping an optional "data:image/png;base64," prefix is a kindness to clients who copy straight from a browser, where that prefix is common.
+
+2. Validating the bytes. This is where your "check the bytes, not the header" decision from the start pays off. sharp reads the real format from the file itself:
+
+    const { format } = await sharp(imageBuffer).metadata().catch(throwInvalidImage);
+    if (format !== 'jpeg' && format !== 'png') {
+        throw new InvalidImageError('UNSUPPORTED_FILE_TYPE', errorMessages.unsupportedFileType);
+    }
+
+metadata() only reads the header, though, so a truncated JPEG can pass it and then fail during the full decode.
+Give that decode the same .catch, otherwise a corrupt image becomes a 500.
+
+3. Mapping failures. A small error class with a code lets the thrown error carry exactly the response it should produce.
+Then one function turns any error into a response:
+
+    const sendError = (response: Response, error: unknown): void => {
+        if (error instanceof InvalidImageError) {
+            response.status(400).json({ error: error.code, message: error.message });
+            return;
+        }
+        ...
+        console.error(error);
+        response.status(500).json({ error: 'INTERNAL_ERROR', message: errorMessages.internalError });
+    }
+
+Two important details. Errors from middleware (malformed JSON, a multipart upload with the wrong field name) happen before your route runs,
+so they need an Express error handler registered with the four-argument signature, which can call the same sendError.
+And the 500 branch should log the real error but send a generic message. By default Express's error page includes the stack trace, which exposes file paths on your server.
+
+Me:
+Give me a list of what possible you'd expect this application to be able to make, I'll compare that against what I've got.
+
+ChatGPT:
+Here's a clean table. "Couldn't read it" is a normal outcome of the process, not an exception, so it's returned rather than thrown.
+Put the full table in the README; it doubles as API documentation:
+
+    | Case                                | Status | error                 |
+    |-------------------------------------|--------|-----------------------|
+    | No image                            | 400    | MISSING_IMAGE         |
+    | Not a JPEG/PNG                      | 400    | UNSUPPORTED_FILE_TYPE |
+    | Corrupt image                       | 400    | INVALID_IMAGE         |
+    | Malformed body / wrong upload field | 400    | INVALID_REQUEST       |
+    | No reading found                    | 422    | UNREADABLE_IMAGE      |
+    | Anything else                       | 500    | INTERNAL_ERROR        |
+
+Me:
+Help me plan the unit tests. I want a small bunch of actually meaningful tests, just testing everything for the sake of it.
+
+ChatGPT:
+I'd use two layers, each chosen for what it's good at.
+
+Layer 1: fast unit tests for the pure logic. These run in milliseconds with no models loaded, so you can run them constantly.
+Good candidates are the functions where the logic is tricky and a regression would be quiet:
+- extractOdometerReading
+    * takes the value AND confidence from the same box (the bug we just fixed)
+    * doesn't join neighbouring boxes (the speedometer-label case)
+    * returns null when nothing numeric is found
+- getConfidenceLevel: one value in each bucket.
+- getBlurKernelSize: the default for blurry images, the odd-size rule, the clamp at 15.
+
+Layer 2: end-to-end tests against the real server with the real models. These are slow (seconds per image), but they're the only thing that proves the whole pipeline works:
+- Every sample image returns the correct mileage.
+- Multipart upload works (base64 is covered by the image tests).
+- Each error case from the README table returns the right status and error code.
+
+Me:
+Here's the what I've got. Did I miss anything?
+
+ChatGPT:
+The structure is good. Going through the error table, here's what isn't covered:
+
+1. An oversized request. This one matters more than it looks, because it's a bug, not just a missing test. I sent a ~105MB JSON body and got back:
+
+    {"error":"INTERNAL_ERROR","message":"An unexpected error occurred ..."} HTTP=500
+
+express.json rejects the body with an error whose type is 'entity.too.large', and multer rejects an oversized file with a MulterError whose code is 'LIMIT_FILE_SIZE'.
+sendError recognises neither, so both fall through to the 500 branch. The brief asks for "other invalid inputs" to be handled gracefully, and a 500 for a user error isn't that.
+
+2. Corrupt bytes, e.g. "hello" base64-encoded and sent as the image. It should be a 400 INVALID_IMAGE.
+
+3. A multipart upload using the wrong field name, e.g. "photo" instead of "image". It should be a 400 INVALID_REQUEST.
+
+The fix for 1 is a small check in sendError, before the generic 400s:
+
+    const isTooLarge = (error: unknown): boolean => {
+        if (error instanceof multer.MulterError) {
+            return error.code === 'LIMIT_FILE_SIZE';
+        }
+        return typeof error === 'object' && error !== null && 'type' in error && error.type === 'entity.too.large';
+    }
+
+While you're there, the limit itself is 100MB, which is far more than any phone photo needs.
+
+Me:
+Review this as if you were a senior engineer at Just screening candidates. Be blunt.
+
+ChatGPT:
+Taking on that role, here's the review.
+
+Verdict: it meets every requirement in the brief. I'd bring you in for the interview, and I'd use the code to probe a few specific things.
+
+What's good:
+- The pipeline clearly came from looking at real data. The speedometer crop band, the sharpness-dependent blur and invert-on-dark are tuned to the photos, not copied from a tutorial.
+- Per-box parsing is a real insight, and the comment explaining it will stop someone "fixing" it.
+- The README is honest about limitations, including the one that makes the detection step look weak. That's a good sign.
+- Sensible dependency choices: memory-only uploads, checking the real format with sharp, and freeing OpenCV memory in a finally.
+
+Issues, most important first:
+1. The layering is lighter than a team that describes itself as "DDD and Hexagonal" would expect. The server creates the reader itself, so the HTTP layer can't be tested with a fake one.
+2. The heuristics were tuned on the six sample images and tested on the same six. That shows it works on them, not that it generalises.
+3. "Largest number wins" fails when a trip meter shows a bigger number than the odometer.
+6. Observability is console.log only. The job spec talks a lot about DataDog.
+7. No "engines" field in package.json, even though the setup relies on a recent Node for running TypeScript directly.
+
+Questions I'd ask you in the interview:
+- "Why keep the detection step when it only finds the odometer in 1 of 4 images?"
+- "What would you change to make this hexagonal, and what would it cost?"
+- "How would you know this works on the next thousand photos rather than these six?"
+
+For the three questions, here's what I'd have ready:
+
+- Detection: it's the only thing that helps on the analogue cluster, where full-image OCR would see every gauge label. It's cheap when it misses, because the fallback is the full image.
+  With more data you'd either fine-tune a detector or drop it and measure the difference.
+- Hexagonal: interfaces for the detector and the OCR engine, with the reader passed into the server. Maybe an hour of work. The benefit is fast HTTP tests and being able to swap in Cloud Vision.
+- Generalisation: collect a few hundred real submissions with human-verified readings, measure accuracy per confidence bucket, and use that to pick the auto-accept threshold.
+  That's also what makes the confidence field useful to the business.
+
+On observability, I'd add one sentence to the README about what you'd measure in production:
+Processing time per stage, the confidence distribution, and the rate of UNREADABLE_IMAGE responses. It shows you've read the spec without building it.
+
+Me:
+README time. Broadly outline what you think should go here? I don't want to write an essay.
+
+ChatGPT:
+A reviewer opens the README with three questions: how do I run it, how do I call it, and why is it built this way?
+Aim to answer each in under a minute. I'd suggest:
+
+1. Setup. Node version first, because running TypeScript directly needs Node 23.6 or newer and that's the most likely thing to trip someone up. Then three commands:
+
+    npm install
+    npm start        # http://localhost:3000
+    npm test
+
+Also say that no credentials are needed, and that the first run downloads the models. The brief specifically asks about credentials, so answer it directly.
+
+2. Usage. One curl example per upload format, a sample response, and the error table.
+
+3. How it works. Four numbered steps (locate, pre-process, OCR, confidence), one or two sentences each, including why per-box parsing exists.
+
+4. Known limitations. The honest list: detection rarely fires on the samples, "largest number wins" and the trip-meter case.
+
+5. What you skipped: auth, linting, real observability. Keep your existing list.
+
+Things to leave out: an architecture diagram (four folders don't need one), a full API spec, and any claim you can't back up, like "works on any odometer".
+
+One more tip: run every command in the README yourself from a fresh clone before submitting.
+The most common take-home failure is a README that says `npm start` when the script is actually named something else, or a curl example with the wrong field name.
+A reviewer who can't run it in two minutes starts the review annoyed.
